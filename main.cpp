@@ -33,7 +33,7 @@ struct CahnHilliardParameters
   double epsilon = 0.05;
   double M = 1.0;
   double t_end = 1.0;
-  double dt_initial = 1e-3;
+  double dt_initial = 1e-5;
   unsigned int n_refinements = 5;
   unsigned int degree = 1;
 };
@@ -149,23 +149,28 @@ CahnHilliardIDA<dim>::setup_dofs()
 }
 
 // ============================================================
-//  Jacobian assembly
+//  Residual & Jacobian assembly
+//
+//  We have a system of equations
+//
+//  y(t) = [c(t), μ(t)]
+//  ẏ(t) = [ċ(t)]
 //
 //  The IDA residual (weak form, per cell) is:
 //
-//    R_c  = (c_dot, phi_c) + M*(grad_mu, grad_phi_c)           = 0
-//    R_mu = (mu - f'(c), phi_mu) - eps^2*(grad_c, grad_phi_mu) = 0
+//    R_c  = (ċ, φ_c) + M·(∇μ, ∇φ_c)           = 0
+//    R_μ  = (μ − f′(c), φ_μ) − ε²·(∇c, ∇φ_μ)  = 0
 //
-//  Differentiating wrt (c, mu) and adding alpha*d/d(c_dot):
+//  with F = [R_c, R_μ]
 //
-//    J = alpha * M_c + K
+//  For the Jacobian we need to provide
 //
-//  where M_c is the mass matrix on the c-component only, and K is:
+//    J = ∂F/∂y + α ∂F/∂ẏ
 //
-//    K_c_c   = 0
-//    K_c_mu  =
-//    K_mu_c  =
-//    K_mu_mu =
+//    J_c_c   = α·(δc, φ_c)
+//    J_c_μ   = M·(∇δμ, ∇φ_c)
+//    J_μ_c   = (−f''(c)·δc, φ_μ) − ε²·(∇δc, ∇φ_μ)
+//    J_μ_μ   = (δμ, φ_μ)
 //
 //  f'(c)  = c^3 - c
 //  f''(c) = 3c^2 - 1
@@ -218,29 +223,36 @@ CahnHilliardIDA<dim>::assemble_jacobian(
         const auto gphi_c_i = fe_values[c_field].gradient(i, q);
         const auto gphi_mu_i = fe_values[mu_field].gradient(i, q);
 
+        const bool i_is_c = fe.system_to_component_index(i).first == 0;
+        const bool i_is_mu = fe.system_to_component_index(i).first == 1;
+
         for (unsigned int j = 0; j < dofs_per_cell; ++j) {
           const double phi_c_j = fe_values[c_field].value(j, q);
           const double phi_mu_j = fe_values[mu_field].value(j, q);
           const auto gphi_c_j = fe_values[c_field].gradient(j, q);
           const auto gphi_mu_j = fe_values[mu_field].gradient(j, q);
 
-          // alpha * M_c
-          cell_matrix(i, j) += alpha * phi_c_j * phi_c_i * JxW;
+          const bool j_is_c = fe.system_to_component_index(j).first == 0;
+          const bool j_is_mu = fe.system_to_component_index(j).first == 1;
 
-          // K_c_c
-          cell_matrix(i, j) += 0.0;
+          // J_c_c
+          if (i_is_c && j_is_c)
+            cell_matrix(i, j) += alpha * phi_c_j * phi_c_i * JxW;
 
-          // K_c_mu
-          cell_matrix(i, j) += prm.M * (gphi_mu_j * gphi_c_i) * JxW;
+          // J_c_μ
+          if (i_is_c && j_is_mu)
+            cell_matrix(i, j) += prm.M * (gphi_mu_j * gphi_c_i) * JxW;
 
-          // K_mu_c
-          cell_matrix(i, j) +=
-            (prm.epsilon * prm.epsilon * (gphi_c_j * gphi_mu_i) -
-             d2f_dc * phi_c_j * phi_mu_i) *
-            JxW;
+          // J_μ_c
+          if (i_is_mu && j_is_c)
+            cell_matrix(i, j) +=
+              (-d2f_dc * phi_c_j * phi_mu_i -
+               prm.epsilon * prm.epsilon * (gphi_c_j * gphi_mu_i)) *
+              JxW;
 
-          // K_mu_mu
-          cell_matrix(i, j) += phi_mu_j * phi_mu_i * JxW;
+          // J_μ_μ
+          if (i_is_mu && j_is_mu)
+            cell_matrix(i, j) += phi_mu_j * phi_mu_i * JxW;
         }
       }
     }
@@ -345,6 +357,7 @@ CahnHilliardIDA<dim>::output_step(
   pcout << "  Step " << step << "  t = " << t << "\n";
 
   y_ghosted = y;
+  y_dot_ghosted = y_dot;
 
   std::vector<std::string> names = { "c", "mu" };
   std::vector<dealii::DataComponentInterpretation::DataComponentInterpretation>
@@ -354,6 +367,13 @@ CahnHilliardIDA<dim>::output_step(
   data_out.attach_dof_handler(dof_handler);
   data_out.add_data_vector(
     y_ghosted, names, dealii::DataOut<dim>::type_dof_data, interp);
+
+  std::vector<std::string> names_2 = { "c_dot", "mu_dot" };
+  std::vector<dealii::DataComponentInterpretation::DataComponentInterpretation>
+    interp_2(2, dealii::DataComponentInterpretation::component_is_scalar);
+
+  data_out.add_data_vector(
+    y_dot_ghosted, names_2, dealii::DataOut<dim>::type_dof_data, interp_2);
 
   dealii::Vector<float> subdomain(tria.n_active_cells());
   for (auto& s : subdomain)
