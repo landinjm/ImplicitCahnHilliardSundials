@@ -30,11 +30,11 @@
 
 struct CahnHilliardParameters
 {
-  double epsilon = 0.05;
+  double epsilon = std::sqrt(1.5);
   double M = 1.0;
-  double t_end = 1.0;
+  double t_end = 100.0;
   double dt_initial = 1e-5;
-  unsigned int n_refinements = 5;
+  unsigned int n_refinements = 6;
   unsigned int degree = 1;
 };
 
@@ -96,7 +96,6 @@ private:
   dealii::TrilinosWrappers::PreconditionILU preconditioner;
 
   CahnHilliardParameters prm;
-  unsigned int output_count = 0;
 };
 
 template<int dim>
@@ -115,7 +114,7 @@ template<int dim>
 void
 CahnHilliardIDA<dim>::setup_mesh()
 {
-  dealii::GridGenerator::hyper_cube(tria, 0.0, 1.0, true);
+  dealii::GridGenerator::hyper_cube(tria, 0.0, 100.0, true);
   tria.refine_global(prm.n_refinements);
 }
 
@@ -214,7 +213,7 @@ CahnHilliardIDA<dim>::assemble_jacobian(
 
     for (unsigned int q = 0; q < n_q; ++q) {
       const double c = c_vals[q];
-      const double d2f_dc = 3.0 * c * c - 1.0;
+      const double d2f_dc = 12.0 * c * (c - 1.0) + 2.0;
       const double JxW = fe_values.JxW(q);
 
       for (unsigned int i = 0; i < dofs_per_cell; ++i) {
@@ -318,7 +317,7 @@ CahnHilliardIDA<dim>::assemble_residual(
       const double c = c_vals[q];
       const double c_dot = c_dot_vals[q];
       const double mu = mu_vals[q];
-      const double df_dc = c * c * c - c;
+      const double df_dc = 4.0 * (c - 1.0) * (c - 0.5) * c;
       const double JxW = fe_values.JxW(q);
 
       for (unsigned int i = 0; i < dofs_per_cell; ++i) {
@@ -381,8 +380,12 @@ CahnHilliardIDA<dim>::output_step(
   data_out.add_data_vector(subdomain, "subdomain");
   data_out.build_patches();
 
-  const std::string filename =
-    "ch_solution_" + dealii::Utilities::int_to_string(output_count++, 4);
+  dealii::DataOutBase::VtkFlags flags;
+  flags.cycle = step;
+  flags.time = t;
+  data_out.set_flags(flags);
+
+  const std::string filename = "ch_solution_";
   data_out.write_vtu_with_pvtu_record("./", filename, step, mpi_comm, 2, 8);
   return 0;
 }
