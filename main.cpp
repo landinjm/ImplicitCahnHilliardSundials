@@ -36,12 +36,14 @@
 #include <deal.II/numerics/solution_transfer.h>
 #include <deal.II/numerics/vector_tools.h>
 
+#include <boost/archive/binary_oarchive.hpp>
+
 #include <fstream>
 #include <iostream>
 #include <string>
 #include <vector>
 
-constexpr int problem_degree = 1;
+constexpr int problem_degree = 2;
 constexpr int problem_dim = 2;
 
 using VectorType = dealii::PETScWrappers::MPI::Vector;
@@ -96,6 +98,10 @@ private:
     const std::vector<VectorType>& all_in,
     std::vector<VectorType>& all_out);
 
+  void save_checkpoint(const double t, const unsigned int step) const;
+
+  void load_checkpoint(double& t, unsigned int& step);
+
   const MPI_Comm mpi_comm;
   dealii::ConditionalOStream pcout;
   dealii::TimerOutput timer;
@@ -119,7 +125,13 @@ private:
   bool do_adaptation = false;
   unsigned int max_refinement = 0;
   unsigned int min_refinement = 0;
-  unsigned int mesh_adaptation_frequency = 0;
+  double last_mesh_adaptation_time = 0.0;
+  unsigned int mesh_adaptation_step_frequency = 0;
+  double mesh_adaptation_time_frequency = 0.0;
+
+  unsigned int output_frequency = 0;
+  unsigned int restart_frequency = 0;
+  bool load_from_restart = false;
 
   double M = 0.0;
   double epsilon = 0.0;
@@ -156,7 +168,14 @@ ImplicitCahnHilliard<dim>::ImplicitCahnHilliard(MPI_Comm comm)
   add_parameter("do mesh adaptation", do_adaptation);
   add_parameter("max refinement", max_refinement);
   add_parameter("min refinement", min_refinement);
-  add_parameter("mesh adaptation frequency", mesh_adaptation_frequency);
+  add_parameter("mesh adaptation step frequency",
+                mesh_adaptation_step_frequency);
+  add_parameter("mesh adaptation time frequency",
+                mesh_adaptation_time_frequency);
+
+  add_parameter("output frequency", output_frequency);
+  add_parameter("restart frequency", restart_frequency);
+  add_parameter("load from restart", load_from_restart);
 
   add_parameter("mobility", M);
   add_parameter("gradient energy", epsilon);
@@ -169,6 +188,7 @@ ImplicitCahnHilliard<dim>::setup_system()
   dealii::TimerOutput::Scope local_timer(timer, "setup system");
 
   dof_handler.distribute_dofs(fe);
+  dealii::DoFRenumbering::Cuthill_McKee(dof_handler);
 
   locally_owned_dofs = dof_handler.locally_owned_dofs();
   locally_relevant_dofs =
@@ -529,14 +549,56 @@ ImplicitCahnHilliard<dim>::transfer_solution_vectors_to_new_mesh(
 
 template<int dim>
 void
+ImplicitCahnHilliard<dim>::save_checkpoint(const double t,
+                                           const unsigned int step) const
+{
+  tria.save("checkpoint.tria");
+  std::ofstream ofs("checkpoint.sol");
+  boost::archive::binary_oarchive oa(ofs);
+  y_ghosted.save(oa, 0);
+  oa << t << step;
+}
+
+template<int dim>
+void
+ImplicitCahnHilliard<dim>::load_checkpoint(double& t, unsigned int& step)
+{
+  tria.load("checkpoint.tria");
+  setup_system();
+
+  std::ifstream ifs("checkpoint.sol");
+  boost::archive::binary_iarchive ia(ifs);
+  y_ghosted.load(ia, 0);
+  ia >> t >> step;
+}
+
+template<int dim>
+void
 ImplicitCahnHilliard<dim>::run()
 {
   pcout << "Implicit Cahn-Hilliard (dim=" << dim << ")\n";
 
   dealii::GridGenerator::hyper_cube(tria, 0.0, 100.0, true);
-  tria.refine_global(n_refinements);
 
-  setup_system();
+  if (load_from_restart) {
+    double restart_time = 0.0;
+    unsigned int restart_step = 0;
+    load_checkpoint(restart_time, restart_step);
+    time_stepper_data.initial_time = restart_time;
+  } else {
+    tria.refine_global(n_refinements);
+    setup_system();
+  }
+
+  VectorType solution(locally_owned_dofs, mpi_comm);
+
+  if (load_from_restart) {
+    solution = y_ghosted;
+  } else {
+    srand(dealii::Utilities::MPI::this_mpi_process(mpi_comm) + 42);
+    dealii::VectorTools::interpolate(
+      dof_handler, InitialCondition<dim>(), solution);
+  }
 
   dealii::PETScWrappers::TimeStepper<VectorType, MatrixType> petsc_ts(
     time_stepper_data);
@@ -576,9 +638,17 @@ ImplicitCahnHilliard<dim>::run()
       [&](const double time,
           const unsigned int step_number,
           const VectorType& y) -> bool {
-      if (step_number > 0 && this->mesh_adaptation_frequency > 0 &&
-          step_number % this->mesh_adaptation_frequency == 0) {
+      const bool step_trigger =
+        step_number > 0 && mesh_adaptation_step_frequency > 0 &&
+        step_number % mesh_adaptation_step_frequency == 0;
+
+      const bool time_trigger =
+        mesh_adaptation_time_frequency > 0.0 &&
+        time >= last_mesh_adaptation_time + mesh_adaptation_time_frequency;
+
+      if (step_trigger || time_trigger) {
         pcout << std::endl << "Adapting the mesh..." << std::endl;
+        last_mesh_adaptation_time = time;
         this->prepare_for_coarsening_and_refinement(y);
         return true;
       } else
@@ -596,14 +666,14 @@ ImplicitCahnHilliard<dim>::run()
   petsc_ts.monitor = [&](const double time,
                          const VectorType& y,
                          const unsigned int step_number) {
-    pcout << "Time step " << step_number << " at t=" << time << std::endl;
-    this->output_results(time, step_number, y);
-  };
+    pcout << "Time step " << step_number << " at t=" << time << "\n"
+          << std::flush;
 
-  VectorType solution(locally_owned_dofs, mpi_comm);
-  srand(dealii::Utilities::MPI::this_mpi_process(mpi_comm) + 42);
-  dealii::VectorTools::interpolate(
-    dof_handler, InitialCondition<dim>(), solution);
+    if (step_number % output_frequency == 0)
+      this->output_results(time, step_number, y);
+    if (step_number % restart_frequency == 0)
+      this->save_checkpoint(time, step_number);
+  };
 
   petsc_ts.solve(solution);
 }
