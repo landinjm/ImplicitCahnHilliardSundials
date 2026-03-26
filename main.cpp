@@ -45,7 +45,6 @@ constexpr int problem_degree = 1;
 constexpr int problem_dim = 2;
 
 using VectorType = dealii::PETScWrappers::MPI::Vector;
-using BlockVectorType = dealii::PETScWrappers::MPI::BlockVector;
 using MatrixType = dealii::PETScWrappers::MPI::SparseMatrix;
 using Preconditioner = dealii::PETScWrappers::PreconditionSSOR;
 
@@ -110,7 +109,6 @@ private:
   dealii::PETScWrappers::TimeStepperData time_stepper_data;
 
   unsigned int n_refinements = 0;
-  unsigned int n_outputs = 0;
 
   double M = 0.0;
   double epsilon = 0.0;
@@ -144,9 +142,6 @@ ImplicitCahnHilliard<dim>::ImplicitCahnHilliard(MPI_Comm comm)
                 n_refinements,
                 "Number of times the mesh is refined globally before starting "
                 "the time stepping.");
-  add_parameter("n outputs",
-                n_outputs,
-                "Number of outputs over the course of the simulation");
 
   add_parameter("mobility", M);
   add_parameter("gradient energy", epsilon);
@@ -481,13 +476,8 @@ ImplicitCahnHilliard<dim>::run()
   petsc_ts.monitor = [&](const double time,
                          const VectorType& y,
                          const unsigned int step_number) {
-    const double output_interval = time_stepper_data.final_time / n_outputs;
-
-    if (step_number == 0 || std::fmod(time, output_interval) <
-                              time_stepper_data.initial_step_size) {
-      pcout << "Time step " << step_number << " at t=" << time << std::endl;
-      this->output_results(time, step_number, y);
-    }
+    pcout << "Time step " << step_number << " at t=" << time << std::endl;
+    this->output_results(time, step_number, y);
   };
 
   VectorType solution(locally_owned_dofs, mpi_comm);
