@@ -208,7 +208,7 @@ ImplicitCahnHilliard<dim>::output_results(const double t,
   for (auto& s : subdomain)
     s = tria.locally_owned_subdomain();
   data_out.add_data_vector(subdomain, "subdomain");
-  data_out.build_patches();
+  data_out.build_patches(problem_degree);
 
   dealii::DataOutBase::VtkFlags flags;
   flags.cycle = step;
@@ -257,7 +257,7 @@ ImplicitCahnHilliard<dim>::implicit_function([[maybe_unused]] double t,
 
   res = 0.0;
 
-  const dealii::QGauss<dim> quadrature(problem_degree + 2);
+  const dealii::QGauss<dim> quadrature(problem_degree + 1);
   dealii::FEValues<dim> fe_values(fe,
                                   quadrature,
                                   dealii::update_values |
@@ -335,7 +335,7 @@ ImplicitCahnHilliard<dim>::assemble_implicit_jacobian(
 
   jacobian_matrix = 0.0;
 
-  const dealii::QGauss<dim> quadrature(problem_degree + 2);
+  const dealii::QGauss<dim> quadrature(problem_degree + 1);
   dealii::FEValues<dim> fe_values(fe,
                                   quadrature,
                                   dealii::update_values |
