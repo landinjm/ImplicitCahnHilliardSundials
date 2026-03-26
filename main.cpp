@@ -42,7 +42,7 @@
 #include <vector>
 
 constexpr int problem_degree = 1;
-constexpr int problem_dim = 2;
+constexpr int problem_dim = 3;
 
 using VectorType = dealii::PETScWrappers::MPI::Vector;
 using MatrixType = dealii::PETScWrappers::MPI::SparseMatrix;

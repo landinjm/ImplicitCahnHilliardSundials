@@ -10,7 +10,7 @@ subsection Implicit Cahn Hilliard
 
   subsection Time stepper
     subsection Running parameters
-      set final time              = 5000
+      set final time              = 500
       set initial step size       = 1.0e-5
       set initial time            = 0
       set match final time        = true
