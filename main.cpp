@@ -119,7 +119,9 @@ private:
   bool do_adaptation = false;
   unsigned int max_refinement = 0;
   unsigned int min_refinement = 0;
-  unsigned int mesh_adaptation_frequency = 0;
+  double last_mesh_adaptation_time = 0.0;
+  unsigned int mesh_adaptation_step_frequency = 0;
+  double mesh_adaptation_time_frequency = 0.0;
 
   double M = 0.0;
   double epsilon = 0.0;
@@ -156,7 +158,10 @@ ImplicitCahnHilliard<dim>::ImplicitCahnHilliard(MPI_Comm comm)
   add_parameter("do mesh adaptation", do_adaptation);
   add_parameter("max refinement", max_refinement);
   add_parameter("min refinement", min_refinement);
-  add_parameter("mesh adaptation frequency", mesh_adaptation_frequency);
+  add_parameter("mesh adaptation step frequency",
+                mesh_adaptation_step_frequency);
+  add_parameter("mesh adaptation time frequency",
+                mesh_adaptation_time_frequency);
 
   add_parameter("mobility", M);
   add_parameter("gradient energy", epsilon);
@@ -576,9 +581,17 @@ ImplicitCahnHilliard<dim>::run()
       [&](const double time,
           const unsigned int step_number,
           const VectorType& y) -> bool {
-      if (step_number > 0 && this->mesh_adaptation_frequency > 0 &&
-          step_number % this->mesh_adaptation_frequency == 0) {
+      const bool step_trigger =
+        step_number > 0 && this->mesh_adaptation_step_frequency > 0 &&
+        step_number % this->mesh_adaptation_step_frequency == 0;
+
+      const bool time_trigger = this->mesh_adaptation_time_frequency > 0.0 &&
+                                time >= this->last_mesh_adaptation_time +
+                                          this->mesh_adaptation_time_frequency;
+
+      if (step_trigger || time_trigger) {
         pcout << std::endl << "Adapting the mesh..." << std::endl;
+        this->last_mesh_adaptation_time = time;
         this->prepare_for_coarsening_and_refinement(y);
         return true;
       } else

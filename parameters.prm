@@ -1,9 +1,10 @@
 subsection Implicit Cahn Hilliard
   set n refinements = 6
-	set do mesh adaptation = false
+	set do mesh adaptation = true
   set max refinement = 6
   set min refinement = 4
-  set mesh adaptation frequency = 100 
+  set mesh adaptation step frequency = 100
+  set mesh adaptation time frequency = 1.0
 
   set mobility = 1
   set gradient energy = 1.22474487139
