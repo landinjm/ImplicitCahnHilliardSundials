@@ -89,6 +89,13 @@ private:
 
   void solve_with_jacobian(const VectorType& src, VectorType& res);
 
+  void prepare_for_coarsening_and_refinement(const VectorType& y);
+
+  void transfer_solution_vectors_to_new_mesh(
+    const double t,
+    const std::vector<VectorType>& all_in,
+    std::vector<VectorType>& all_out);
+
   const MPI_Comm mpi_comm;
   dealii::ConditionalOStream pcout;
   dealii::TimerOutput timer;
@@ -109,6 +116,10 @@ private:
   dealii::PETScWrappers::TimeStepperData time_stepper_data;
 
   unsigned int n_refinements = 0;
+  bool do_adaptation = false;
+  unsigned int max_refinement = 0;
+  unsigned int min_refinement = 0;
+  unsigned int mesh_adaptation_frequency = 0;
 
   double M = 0.0;
   double epsilon = 0.0;
@@ -142,6 +153,10 @@ ImplicitCahnHilliard<dim>::ImplicitCahnHilliard(MPI_Comm comm)
                 n_refinements,
                 "Number of times the mesh is refined globally before starting "
                 "the time stepping.");
+  add_parameter("do mesh adaptation", do_adaptation);
+  add_parameter("max refinement", max_refinement);
+  add_parameter("min refinement", min_refinement);
+  add_parameter("mesh adaptation frequency", mesh_adaptation_frequency);
 
   add_parameter("mobility", M);
   add_parameter("gradient energy", epsilon);
@@ -152,9 +167,6 @@ void
 ImplicitCahnHilliard<dim>::setup_system()
 {
   dealii::TimerOutput::Scope local_timer(timer, "setup system");
-
-  dealii::GridGenerator::hyper_cube(tria, 0.0, 100.0, true);
-  tria.refine_global(n_refinements);
 
   dof_handler.distribute_dofs(fe);
 
@@ -208,7 +220,7 @@ ImplicitCahnHilliard<dim>::output_results(const double t,
   for (auto& s : subdomain)
     s = tria.locally_owned_subdomain();
   data_out.add_data_vector(subdomain, "subdomain");
-  data_out.build_patches();
+  data_out.build_patches(problem_degree);
 
   dealii::DataOutBase::VtkFlags flags;
   flags.cycle = step;
@@ -257,7 +269,7 @@ ImplicitCahnHilliard<dim>::implicit_function([[maybe_unused]] double t,
 
   res = 0.0;
 
-  const dealii::QGauss<dim> quadrature(problem_degree + 2);
+  const dealii::QGauss<dim> quadrature(problem_degree + 1);
   dealii::FEValues<dim> fe_values(fe,
                                   quadrature,
                                   dealii::update_values |
@@ -335,7 +347,7 @@ ImplicitCahnHilliard<dim>::assemble_implicit_jacobian(
 
   jacobian_matrix = 0.0;
 
-  const dealii::QGauss<dim> quadrature(problem_degree + 2);
+  const dealii::QGauss<dim> quadrature(problem_degree + 1);
   dealii::FEValues<dim> fe_values(fe,
                                   quadrature,
                                   dealii::update_values |
@@ -434,9 +446,95 @@ ImplicitCahnHilliard<dim>::solve_with_jacobian(const VectorType& src,
 
 template<int dim>
 void
+ImplicitCahnHilliard<dim>::prepare_for_coarsening_and_refinement(
+  const VectorType& y)
+{
+  dealii::TimerOutput::Scope local_timer(timer, "refine mesh");
+
+  const dealii::QGauss<dim> quadrature(problem_degree + 1);
+  dealii::FEValues<dim> fe_values(fe, quadrature, dealii::update_values);
+
+  const unsigned int n_q = quadrature.size();
+
+  const dealii::FEValuesExtractors::Scalar c_field(0);
+
+  y_ghosted = y;
+
+  std::vector<double> c_vals(n_q);
+
+  for (const auto& cell : dof_handler.active_cell_iterators()) {
+    if (!cell->is_locally_owned())
+      continue;
+
+    fe_values.reinit(cell);
+    fe_values[c_field].get_function_values(y_ghosted, c_vals);
+
+    // Average c over quadrature points
+    double c_avg = 0.0;
+    for (const double v : c_vals)
+      c_avg += v;
+    c_avg /= c_vals.size();
+
+    // Refine if in the interface region, coarsen if deep in bulk
+    if (c_avg > 0.01 && c_avg < 0.99)
+      cell->set_refine_flag();
+    else
+      cell->set_coarsen_flag();
+  }
+
+  // Enforce level bounds
+  for (const auto& cell : tria.active_cell_iterators()) {
+    if (cell->level() >= (int)max_refinement)
+      cell->clear_refine_flag();
+    if (cell->level() <= (int)min_refinement)
+      cell->clear_coarsen_flag();
+  }
+}
+
+template<int dim>
+void
+ImplicitCahnHilliard<dim>::transfer_solution_vectors_to_new_mesh(
+  [[maybe_unused]] const double t,
+  const std::vector<VectorType>& all_in,
+  std::vector<VectorType>& all_out)
+{
+  dealii::SolutionTransfer<dim, VectorType> solution_trans(dof_handler);
+
+  std::vector<VectorType> all_in_ghosted(all_in.size());
+  std::vector<const VectorType*> all_in_ghosted_ptr(all_in.size());
+  std::vector<VectorType*> all_out_ptr(all_in.size());
+  for (unsigned int i = 0; i < all_in.size(); ++i) {
+    all_in_ghosted[i].reinit(
+      locally_owned_dofs, locally_relevant_dofs, mpi_comm);
+    all_in_ghosted[i] = all_in[i];
+    all_in_ghosted_ptr[i] = &all_in_ghosted[i];
+  }
+
+  tria.prepare_coarsening_and_refinement();
+  solution_trans.prepare_for_coarsening_and_refinement(all_in_ghosted_ptr);
+  tria.execute_coarsening_and_refinement();
+
+  setup_system();
+
+  all_out.resize(all_in.size());
+  for (unsigned int i = 0; i < all_in.size(); ++i) {
+    all_out[i].reinit(locally_owned_dofs, mpi_comm);
+    all_out_ptr[i] = &all_out[i];
+  }
+  solution_trans.interpolate(all_out_ptr);
+
+  for (VectorType& v : all_out)
+    constraints.distribute(v);
+}
+
+template<int dim>
+void
 ImplicitCahnHilliard<dim>::run()
 {
   pcout << "Implicit Cahn-Hilliard (dim=" << dim << ")\n";
+
+  dealii::GridGenerator::hyper_cube(tria, 0.0, 100.0, true);
+  tria.refine_global(n_refinements);
 
   setup_system();
 
@@ -472,6 +570,28 @@ ImplicitCahnHilliard<dim>::run()
     algebraic_set.compress();
     return algebraic_set;
   };
+
+  if (do_adaptation) {
+    petsc_ts.decide_and_prepare_for_remeshing =
+      [&](const double time,
+          const unsigned int step_number,
+          const VectorType& y) -> bool {
+      if (step_number > 0 && this->mesh_adaptation_frequency > 0 &&
+          step_number % this->mesh_adaptation_frequency == 0) {
+        pcout << std::endl << "Adapting the mesh..." << std::endl;
+        this->prepare_for_coarsening_and_refinement(y);
+        return true;
+      } else
+        return false;
+    };
+
+    petsc_ts.transfer_solution_vectors_to_new_mesh =
+      [&](const double time,
+          const std::vector<VectorType>& all_in,
+          std::vector<VectorType>& all_out) {
+        this->transfer_solution_vectors_to_new_mesh(time, all_in, all_out);
+      };
+  }
 
   petsc_ts.monitor = [&](const double time,
                          const VectorType& y,
