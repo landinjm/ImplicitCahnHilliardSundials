@@ -1,0 +1,28 @@
+subsection Implicit Cahn Hilliard
+  set n refinements = 6
+  set n outputs = 10
+
+  set mobility = 1
+  set gradient energy = 1.22474487139
+
+  subsection Time stepper
+    subsection Running parameters
+      set final time              = 50
+      set initial step size       = 0.025
+      set initial time            = 0
+      set match final time        = false
+      set maximum number of steps = -1
+      set options prefix          =
+      set solver type             = beuler
+    end
+
+    subsection Error control
+      set absolute error tolerance = -1
+      set relative error tolerance = -1
+      set adaptor type             = none
+      set ignore algebraic lte     = true
+      set maximum step size        = -1
+      set minimum step size        = -1
+    end
+  end
+end
