@@ -407,35 +407,25 @@ ImplicitCahnHilliard<dim>::assemble_implicit_jacobian(
         const auto gphi_c_i = fe_values[c_field].gradient(i, q);
         const auto gphi_mu_i = fe_values[mu_field].gradient(i, q);
 
-        const bool i_is_c = fe.system_to_component_index(i).first == 0;
-        const bool i_is_mu = fe.system_to_component_index(i).first == 1;
-
         for (unsigned int j = 0; j < dofs_per_cell; ++j) {
           const double phi_c_j = fe_values[c_field].value(j, q);
           const double phi_mu_j = fe_values[mu_field].value(j, q);
           const auto gphi_c_j = fe_values[c_field].gradient(j, q);
           const auto gphi_mu_j = fe_values[mu_field].gradient(j, q);
 
-          const bool j_is_c = fe.system_to_component_index(j).first == 0;
-          const bool j_is_mu = fe.system_to_component_index(j).first == 1;
-
           // J_c_c
-          if (i_is_c && j_is_c)
-            cell_matrix(i, j) += alpha * phi_c_j * phi_c_i * JxW;
+          cell_matrix(i, j) += alpha * phi_c_j * phi_c_i * JxW;
 
           // J_c_μ
-          if (i_is_c && j_is_mu)
-            cell_matrix(i, j) += M * (gphi_mu_j * gphi_c_i) * JxW;
+          cell_matrix(i, j) += M * (gphi_mu_j * gphi_c_i) * JxW;
 
           // J_μ_c
-          if (i_is_mu && j_is_c)
-            cell_matrix(i, j) += (-d2f_dc * phi_c_j * phi_mu_i -
-                                  epsilon * epsilon * (gphi_c_j * gphi_mu_i)) *
-                                 JxW;
+          cell_matrix(i, j) += (-d2f_dc * phi_c_j * phi_mu_i -
+                                epsilon * epsilon * (gphi_c_j * gphi_mu_i)) *
+                               JxW;
 
           // J_μ_μ
-          if (i_is_mu && j_is_mu)
-            cell_matrix(i, j) += phi_mu_j * phi_mu_i * JxW;
+          cell_matrix(i, j) += phi_mu_j * phi_mu_i * JxW;
         }
       }
     }
